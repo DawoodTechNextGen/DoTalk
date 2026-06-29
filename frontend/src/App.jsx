@@ -4,8 +4,8 @@ import { Sun, Moon, Download, LogOut, Loader2, AlertCircle, User as UserIcon } f
 import ChatContainer from './components/ChatContainer';
 import { io } from 'socket.io-client';
 
-const API_BASE_URL = 'http://localhost:3000/api';
-const SOCKET_URL = 'http://localhost:3000';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000';
 const VAPID_PUBLIC_KEY = 'BJA70RLbPhWeENV4TRlwf2ZTd4UcuWkzR9RLZuqDxO5CLVa-4qu_ghfNnk9Jvqf-4yZD67HXqQtQIq0Qwg_IWho';
 
 function urlBase64ToUint8Array(base64String) {
