@@ -28,7 +28,7 @@ This project is organized as a monorepo containing both the backend service and 
 
 ## 🛠️ Database Setup
 
-Run the following SQL commands on your target database (`dawoodte_task_desk` or equivalent) to create the required tables and columns:
+Run the following SQL commands on your target database (`your_database_name` or equivalent) to create the required tables and columns:
 
 ```sql
 -- 1. Update technologies to support assigned supervisors
@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS `push_subscriptions` (
    DB_PORT=3306
    DB_USERNAME=root
    DB_PASSWORD=your_password
-   DB_DATABASE=dawoodte_task_desk
+   DB_DATABASE=your_database_name
    JWT_SECRET=your_jwt_secret_token
    CLOUDINARY_URL=cloudinary://<api_key>:<api_secret>@<cloud_name>
    ```
