@@ -22,14 +22,58 @@ export class ChatService {
     private techRepository: Repository<Technology>,
   ) {}
 
-  // List all users in the system (contacts list)
-  async getContacts(currentUser: User): Promise<User[]> {
-    return this.userRepository.find({
+  // List all users in the system (contacts list), with unread count, last message preview, and last seen
+  async getContacts(currentUser: User): Promise<any[]> {
+    const users = await this.userRepository.find({
       where: { id: In(await this.getAvailableContactIds(currentUser.id)) },
-      relations: ['technology'],
+      relations: ['technology', 'technology.supervisor'],
       order: { name: 'ASC' },
     });
+
+    const contactsWithMeta = await Promise.all(
+      users.map(async (u) => {
+        // Unread count
+        const unreadCount = await this.messageRepository.count({
+          where: { senderId: u.id, receiverId: currentUser.id, isRead: 0 },
+        });
+
+        // Last message between these two users
+        const lastMessages = await this.messageRepository.find({
+          where: [
+            { senderId: currentUser.id, receiverId: u.id },
+            { senderId: u.id, receiverId: currentUser.id },
+          ],
+          order: { createdAt: 'DESC' },
+          take: 1,
+        });
+        const lastMessage = lastMessages[0] || null;
+
+        // Check if this contact is a supervisor of any technology
+        const isSupervisor = u.userRole === 'supervisor' || u.technology?.supervisorId === u.id;
+
+        return {
+          ...u,
+          unreadCount,
+          lastMessage: lastMessage
+            ? {
+                text:
+                  lastMessage.messageType === 'text'
+                    ? lastMessage.message
+                    : lastMessage.messageType === 'image'
+                    ? '📷 Photo'
+                    : '📎 File',
+                createdAt: lastMessage.createdAt,
+                isMine: lastMessage.senderId === currentUser.id,
+              }
+            : null,
+          isSupervisor,
+        };
+      }),
+    );
+
+    return contactsWithMeta;
   }
+
 
   private async getAvailableContactIds(currentUserId: number): Promise<number[]> {
     const users = await this.userRepository.find({ 
@@ -48,21 +92,22 @@ export class ChatService {
 
   // Create a new group and add creator + initial members
   async createGroup(
-    groupName: string, 
-    creatorId: number, 
-    memberIds: number[], 
+    groupName: string,
+    creatorId: number,
+    memberIds: number[],
     techId?: number,
-    internshipType?: number
+    internshipType?: number,
+    memberKeys?: { [userId: number]: string },
   ): Promise<ChatGroup> {
-    let supervisorId: number | null = null;
+    // Check if technology has supervisor
+    let supervisorId = null;
     if (techId) {
-      try {
-        const tech = await this.techRepository.findOne({ where: { id: techId } });
-        if (tech && tech.supervisorId) {
-          supervisorId = tech.supervisorId;
-        }
-      } catch (err) {
-        console.error('Error fetching technology supervisor:', err);
+      const tech = await this.techRepository.findOne({
+        where: { id: techId },
+        relations: ['supervisor'],
+      });
+      if (tech && tech.supervisor) {
+        supervisorId = tech.supervisor.id;
       }
     }
 
@@ -85,6 +130,7 @@ export class ChatService {
     const creatorMember = this.memberRepository.create({
       groupId: savedGroup.id,
       userId: creatorId,
+      encryptedGroupKey: memberKeys?.[creatorId] || null,
     });
     await this.memberRepository.save(creatorMember);
 
@@ -95,6 +141,7 @@ export class ChatService {
         this.memberRepository.create({
           groupId: savedGroup.id,
           userId,
+          encryptedGroupKey: memberKeys?.[userId] || null,
         }),
       );
       await this.memberRepository.save(memberEntities);
@@ -117,8 +164,8 @@ export class ChatService {
     return group;
   }
 
-  // Get all groups the user is currently a member of
-  async getUserGroups(userId: number): Promise<ChatGroup[]> {
+  // Get all groups the user is currently a member of, with unread count + last message per group
+  async getUserGroups(userId: number): Promise<any[]> {
     const memberships = await this.memberRepository.find({
       where: { userId },
       select: ['groupId'],
@@ -130,10 +177,51 @@ export class ChatService {
 
     const groupIds = memberships.map((m) => m.groupId);
 
-    return this.groupRepository.find({
+    const groups = await this.groupRepository.find({
       where: { id: In(groupIds) },
       relations: ['members', 'members.user', 'members.user.technology', 'technology'],
     });
+
+    // Attach unread count + last message per group
+    const groupsWithMeta = await Promise.all(
+      groups.map(async (g) => {
+        const unreadCount = await this.messageRepository.count({
+          where: { groupId: g.id, isRead: 0 },
+        });
+        const myCount = await this.messageRepository.count({
+          where: { groupId: g.id, senderId: userId, isRead: 0 },
+        });
+
+        // Last message in this group
+        const lastMessages = await this.messageRepository.find({
+          where: { groupId: g.id },
+          relations: ['sender'],
+          order: { createdAt: 'DESC' },
+          take: 1,
+        });
+        const lastMsg = lastMessages[0] || null;
+
+        return {
+          ...g,
+          unreadCount: Math.max(0, unreadCount - myCount),
+          lastMessage: lastMsg
+            ? {
+                text:
+                  lastMsg.messageType === 'text'
+                    ? lastMsg.message
+                    : lastMsg.messageType === 'image'
+                    ? '📷 Photo'
+                    : '📎 File',
+                senderName: lastMsg.sender?.name || '',
+                createdAt: lastMsg.createdAt,
+                isMine: lastMsg.senderId === userId,
+              }
+            : null,
+        };
+      }),
+    );
+
+    return groupsWithMeta;
   }
 
   // Save a new message
@@ -145,6 +233,9 @@ export class ChatService {
     messageType: 'text' | 'image' | 'file' = 'text',
     filePath: string | null = null,
     parentId: number | null = null,
+    encryptedKeyReceiver: string | null = null,
+    encryptedKeySender: string | null = null,
+    iv: string | null = null,
   ): Promise<ChatMessage> {
     if (!receiverId && !groupId) {
       throw new BadRequestException('Message must have a recipient or a group');
@@ -159,6 +250,9 @@ export class ChatService {
       filePath,
       parentId,
       isRead: 0,
+      encryptedKeyReceiver,
+      encryptedKeySender,
+      iv,
     });
 
     const savedMessage = await this.messageRepository.save(message);
@@ -237,4 +331,24 @@ export class ChatService {
   async getTechnologies() {
     return this.techRepository.find({ order: { name: 'ASC' } });
   }
+
+  // Update user's last seen timestamp (called on socket disconnect)
+  async updateLastSeen(userId: number): Promise<void> {
+    await this.userRepository.update({ id: userId }, { lastSeen: new Date() });
+  }
+
+  // Register public key
+  async savePublicKey(userId: number, publicKey: string): Promise<void> {
+    await this.userRepository.update({ id: userId }, { publicKey });
+  }
+
+  // Get user public key
+  async getPublicKey(userId: number): Promise<string | null> {
+    const user = await this.userRepository.findOne({
+      where: { id: userId },
+      select: ['publicKey'],
+    });
+    return user ? user.publicKey : null;
+  }
 }
+

@@ -47,7 +47,16 @@ export class NotificationsService {
     return subscription;
   }
 
-  async sendNotification(userId: number, title: string, body: string, url: string): Promise<void> {
+  async sendNotification(
+    userId: number,
+    title: string,
+    body: string,
+    url: string,
+    options?: {
+      tag?: string;          // Notification grouping tag (same tag replaces old notification)
+      senderInitial?: string; // First letter of sender name for avatar
+    },
+  ): Promise<void> {
     const subscriptions = await this.subscriptionRepository.find({
       where: { userId },
     });
@@ -57,7 +66,15 @@ export class NotificationsService {
       return;
     }
 
-    const payload = JSON.stringify({ title, body, url });
+    // Rich payload — service worker will use all these fields
+    const payload = JSON.stringify({
+      title,
+      body,
+      url,
+      tag: options?.tag || `dotalk-user-${userId}`,
+      senderInitial: options?.senderInitial || '💬',
+      timestamp: Date.now(),
+    });
 
     const sendPromises = subscriptions.map(async (sub) => {
       try {

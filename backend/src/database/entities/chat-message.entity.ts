@@ -43,6 +43,15 @@ export class ChatMessage {
   @Column({ name: 'parent_id', nullable: true })
   parentId: number;
 
+  @Column({ name: 'encrypted_key_receiver', type: 'text', nullable: true, default: null })
+  encryptedKeyReceiver: string | null;
+
+  @Column({ name: 'encrypted_key_sender', type: 'text', nullable: true, default: null })
+  encryptedKeySender: string | null;
+
+  @Column({ name: 'iv', type: 'varchar', length: 100, nullable: true, default: null })
+  iv: string | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 

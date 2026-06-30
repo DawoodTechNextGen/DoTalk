@@ -25,6 +25,9 @@ export class ChatGroupMember {
   @CreateDateColumn({ name: 'joined_at' })
   joinedAt: Date;
 
+  @Column({ name: 'encrypted_group_key', type: 'text', nullable: true, default: null })
+  encryptedGroupKey: string | null;
+
   @ManyToOne(() => ChatGroup, (group) => group.members, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'group_id' })
   group: ChatGroup;

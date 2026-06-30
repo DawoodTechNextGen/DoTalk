@@ -3,6 +3,7 @@ import { useTheme } from './context/ThemeContext';
 import { Sun, Moon, Download, LogOut, Loader2, AlertCircle, User as UserIcon } from 'lucide-react';
 import ChatContainer from './components/ChatContainer';
 import { io } from 'socket.io-client';
+import { getOrCreateKeyPair } from './utils/cryptoHelper';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3000/api';
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || 'http://localhost:3000';
@@ -35,6 +36,25 @@ export default function App() {
   const [installPrompt, setInstallPrompt] = useState(null);
   const [showInstallBanner, setShowInstallBanner] = useState(true);
 
+  // Register E2EE Public Key with Backend
+  const registerE2EEPublicKey = async (jwtToken) => {
+    try {
+      const { publicKeyJwk } = await getOrCreateKeyPair();
+      console.log('[E2EE] Key pair active. Syncing public key...');
+      await fetch(`${API_BASE_URL}/chat/public-key`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${jwtToken}`,
+        },
+        body: JSON.stringify({ publicKey: publicKeyJwk }),
+      });
+      console.log('[E2EE] Public key registered successfully.');
+    } catch (err) {
+      console.error('[E2EE] Failed to register public key:', err);
+    }
+  };
+
   // Load user profile if token exists
   useEffect(() => {
     if (token) {
@@ -47,6 +67,7 @@ export default function App() {
         })
         .then((data) => {
           setUser(data);
+          registerE2EEPublicKey(token);
           subscribeToPushNotifications(token);
         })
         .catch((err) => {
@@ -73,10 +94,22 @@ export default function App() {
       const newSocket = io(SOCKET_URL, {
         auth: { token },
         transports: ['websocket'],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
       });
 
       newSocket.on('connect', () => {
         console.log('Connected to socket server.');
+      });
+
+      newSocket.on('disconnect', (reason) => {
+        console.warn('Socket disconnected:', reason);
+      });
+
+      newSocket.on('connect_error', (err) => {
+        console.error('Socket connection error:', err.message);
       });
 
       setSocket(newSocket);
@@ -112,6 +145,7 @@ export default function App() {
       localStorage.setItem('token', data.accessToken);
       setToken(data.accessToken);
       setUser(data.user);
+      registerE2EEPublicKey(data.accessToken);
       subscribeToPushNotifications(data.accessToken);
     } catch (err) {
       setLoginError(err.message);
@@ -137,24 +171,28 @@ export default function App() {
     }
 
     try {
-      // Register service worker if not registered or wait till it is ready
+      // Request notification permission first
+      const permission = await Notification.requestPermission();
+      if (permission !== 'granted') {
+        console.warn('Notification permission denied.');
+        return;
+      }
+
+      // Wait for VitePWA's unified SW (src/sw.js) to be active.
+      // Our SW handles both caching AND push events — no conflict.
       const registration = await navigator.serviceWorker.ready;
-      
+      console.log('SW ready for push subscription:', registration.scope);
+
+      // Get existing subscription or create a fresh one
       let subscription = await registration.pushManager.getSubscription();
 
       if (!subscription) {
-        // Request notifications permission if not granted
-        const permission = await Notification.requestPermission();
-        if (permission !== 'granted') {
-          console.warn('Notification permission denied.');
-          return;
-        }
-
         const applicationServerKey = urlBase64ToUint8Array(VAPID_PUBLIC_KEY);
         subscription = await registration.pushManager.subscribe({
           userVisibleOnly: true,
           applicationServerKey,
         });
+        console.log('Push subscription created successfully.');
       }
 
       // Sync subscription with NestJS backend
@@ -167,11 +205,12 @@ export default function App() {
         body: JSON.stringify(subscription),
       });
 
-      console.log('Web push notification subscription synced successfully.');
+      console.log('Push notification subscription synced with backend.');
     } catch (err) {
-      console.error('Failed to subscribe user to push notifications:', err);
+      console.error('Failed to subscribe to push notifications:', err);
     }
   };
+
 
   const triggerInstall = () => {
     if (installPrompt) {
@@ -315,12 +354,6 @@ export default function App() {
                   )}
                 </button>
               </form>
-
-              <div className="text-center mt-6">
-                <span className="text-xs text-gray-400 dark:text-gray-500">
-                  Demo logins: john@example.com / password123
-                </span>
-              </div>
             </div>
           </div>
         )}

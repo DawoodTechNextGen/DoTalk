@@ -38,6 +38,13 @@ export class User {
   @Column({ name: 'internship_type', nullable: true })
   internshipType: number;
 
+  @Column({ name: 'last_seen', type: 'datetime', nullable: true, default: null })
+  lastSeen: Date | null;
+
+  @Column({ name: 'public_key', type: 'text', nullable: true, default: null })
+  publicKey: string | null;
+
+
   @ManyToOne(() => Technology, (tech) => tech.users, { onDelete: 'SET NULL' })
   @JoinColumn({ name: 'tech_id' })
   technology: Technology;

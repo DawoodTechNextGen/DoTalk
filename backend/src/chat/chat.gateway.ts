@@ -85,8 +85,12 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
         connections.delete(client.id);
         if (connections.size === 0) {
           this.activeConnections.delete(userId);
-          // Broadcast user offline status
-          this.server.emit('userStatusChanged', { userId, status: 'offline' });
+          // Update last seen timestamp in DB
+          this.chatService.updateLastSeen(userId).catch((err) =>
+            this.logger.error(`Failed to update lastSeen for user ${userId}: ${err.message}`)
+          );
+          // Broadcast user offline status with lastSeen time
+          this.server.emit('userStatusChanged', { userId, status: 'offline', lastSeen: new Date() });
           this.logger.log(`User ${userId} went completely offline.`);
         }
       }
@@ -119,6 +123,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       messageType?: 'text' | 'image' | 'file';
       filePath?: string | null;
       parentId?: number | null;
+      encryptedKeyReceiver?: string | null;
+      encryptedKeySender?: string | null;
+      iv?: string | null;
     },
   ) {
     const sender = client.data.user;
@@ -136,7 +143,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
     }
 
-    // Save message to database
+    // Save message to database with E2EE details
     const savedMsg = await this.chatService.saveMessage(
       sender.id,
       data.receiverId,
@@ -145,6 +152,9 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       messageType,
       filePath,
       parentId,
+      data.encryptedKeyReceiver || null,
+      data.encryptedKeySender || null,
+      data.iv || null,
     );
 
     // Emit message to appropriate channels
@@ -152,35 +162,62 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // Group message: emit to the group room
       this.server.to(`group_${data.groupId}`).emit('messageReceived', savedMsg);
       
-      // Notify group members who are offline/inactive via Push Notifications
+      // Notify group members via Push Notifications (offline) or in-app sound (online)
       const group = await this.chatService.getGroupDetails(data.groupId);
       const textPreview = messageType === 'text' ? data.message : `Sent a ${messageType}`;
       
-      const offlineMembers = group.members
+      const otherMembers = group.members
         .map((m) => m.userId)
-        .filter((userId) => userId !== sender.id && !this.isUserOnline(userId));
+        .filter((userId) => userId !== sender.id);
 
-      for (const userId of offlineMembers) {
-        await this.notificationsService.sendNotification(
-          userId,
-          `Group: ${group.groupName}`,
-          `${savedMsg.sender.name}: ${textPreview}`,
-          `/chat`,
-        );
+      for (const userId of otherMembers) {
+        if (this.isUserOnline(userId)) {
+          // Online: send in-app notification for sound
+          this.server.to(`user_${userId}`).emit('inAppNotification', {
+            title: group.groupName,
+            body: `${savedMsg.sender.name}: ${textPreview}`,
+            groupId: data.groupId,
+          });
+        } else {
+          // Offline: send push notification with rich options
+          await this.notificationsService.sendNotification(
+            userId,
+            group.groupName,
+            `${savedMsg.sender.name}: ${textPreview}`,
+            `/chat`,
+            {
+              // Tag per group — notifications from same group replace each other
+              tag: `dotalk-group-${data.groupId}`,
+              senderInitial: savedMsg.sender.name?.charAt(0)?.toUpperCase() || '👥',
+            },
+          );
+        }
       }
     } else if (data.receiverId) {
       // Direct message: emit to sender and receiver personal rooms
       this.server.to(`user_${data.receiverId}`).emit('messageReceived', savedMsg);
       this.server.to(`user_${sender.id}`).emit('messageReceived', savedMsg);
 
-      // Check if receiver is offline to trigger Push Notification
-      if (!this.isUserOnline(data.receiverId)) {
+      // In-app sound notification for online receiver
+      if (this.isUserOnline(data.receiverId)) {
+        this.server.to(`user_${data.receiverId}`).emit('inAppNotification', {
+          title: `New message from ${savedMsg.sender.name}`,
+          body: messageType === 'text' ? data.message : `Sent a ${messageType}`,
+          senderId: sender.id,
+        });
+      } else {
+        // Offline: send push notification with rich options
         const textPreview = messageType === 'text' ? data.message : `Sent a ${messageType}`;
         await this.notificationsService.sendNotification(
           data.receiverId,
-          `New message from ${savedMsg.sender.name}`,
+          savedMsg.sender.name,
           textPreview,
           `/chat`,
+          {
+            // Tag per sender — notifications from same person replace each other (WhatsApp style)
+            tag: `dotalk-dm-${sender.id}`,
+            senderInitial: savedMsg.sender.name?.charAt(0)?.toUpperCase() || '💬',
+          },
         );
       }
     }

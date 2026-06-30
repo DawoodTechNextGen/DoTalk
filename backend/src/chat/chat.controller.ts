@@ -35,6 +35,7 @@ export class ChatController {
       memberIds: number[]; 
       techId?: number; 
       internshipType?: number;
+      memberKeys?: { [userId: number]: string };
     },
   ) {
     const creatorId = req.user.id;
@@ -44,6 +45,7 @@ export class ChatController {
       data.memberIds,
       data.techId,
       data.internshipType,
+      data.memberKeys,
     );
   }
 
@@ -72,5 +74,17 @@ export class ChatController {
   ) {
     const requesterId = req.user.id;
     return this.chatService.removeGroupMember(groupId, userId, requesterId);
+  }
+
+  @Post('public-key')
+  async savePublicKey(@Req() req, @Body('publicKey') publicKey: string) {
+    await this.chatService.savePublicKey(req.user.id, publicKey);
+    return { success: true };
+  }
+
+  @Get('public-key/:userId')
+  async getPublicKey(@Param('userId', ParseIntPipe) userId: number) {
+    const publicKey = await this.chatService.getPublicKey(userId);
+    return { publicKey };
   }
 }
